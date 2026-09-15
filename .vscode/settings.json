@@ -1,0 +1,23 @@
+{
+    "cSpell.words": [
+        "bestaudio",
+        "chromadb",
+        "dotenv",
+        "fpdf",
+        "huggingface",
+        "langchain",
+        "LCEL",
+        "mistralai",
+        "numpy",
+        "outtmpl",
+        "postprocessors",
+        "preferredcodec",
+        "preferredquality",
+        "pydub",
+        "reportlab",
+        "streamlit",
+        "tiktoken",
+        "torchaudio",
+        "tqdm"
+    ]
+}
