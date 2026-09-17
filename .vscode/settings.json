@@ -3,7 +3,9 @@
         "bestaudio",
         "chromadb",
         "dotenv",
+        "downloades",
         "fpdf",
+        "hinglish",
         "huggingface",
         "langchain",
         "LCEL",
@@ -15,9 +17,13 @@
         "preferredquality",
         "pydub",
         "reportlab",
+        "saaras",
+        "sarvam",
         "streamlit",
         "tiktoken",
         "torchaudio",
-        "tqdm"
+        "tqdm",
+        "WHISHPER",
+        "WISHPER"
     ]
 }
