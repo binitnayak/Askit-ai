@@ -1,5 +1,4 @@
 .env
-downloades/
-downloads/
 .venv/
 __pycache__/
+temp/
