@@ -37,6 +37,7 @@ torchvision>=0.17.0
 deep-translator>=1.11.4
 
 # ── Document Handling ─────────────────────────────────────────────────────────
+pypdf>=5.0.0
 PyPDF2>=3.0.1
 reportlab>=4.0.7
 fpdf2>=2.7.9
