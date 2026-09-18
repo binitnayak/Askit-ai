@@ -32,6 +32,7 @@ openai-whisper>=20231117
 torch>=2.2.0
 torchaudio>=2.2.0
 torchvision>=0.17.0
+youtube-transcript-api>=1.0.0
 
 # ── Translation (Hindi ↔ English) ─────────────────────────────────────────────
 deep-translator>=1.11.4
