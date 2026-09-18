@@ -1,85 +1,43 @@
-# import requests
-# import json
-
-# def build_rag_chain(vector_store):
-#     """Returns the retriever package with k=2 for better context."""
-#     return {"retriever": vector_store.as_retriever(search_kwargs={"k": 2})}
-
-# def ask_question_stream(rag_package, query: str):
-#     """Streams response and handles reasoning models correctly."""
-#     try:
-#         retriever = rag_package["retriever"]
-#         docs = retriever.invoke(query)
-#         context = "\n\n".join([doc.page_content for doc in docs]) if docs else "No context found."
-        
-#         prompt = f"""Answer the question in friendly Hinglish based on the context below. Keep it brief and direct.
-
-# Context: {context}
-# Question: {query}"""
-        
-#         url = "http://localhost:11434/api/generate"
-#         payload = {
-#             "model": "qwen3:4b",
-#             "prompt": prompt,
-#             "stream": True,
-#             "options": {
-#                 "temperature": 0.2,
-#                 "num_predict": 2048,  # Increased significantly to allow thinking + output
-#                 "num_ctx": 2048
-#             }
-#         }
-        
-#         response = requests.post(url, json=payload, stream=True, timeout=60)
-        
-#         if response.status_code == 200:
-#             has_content = False
-#             for line in response.iter_lines():
-#                 if line:
-#                     data = json.loads(line.decode('utf-8'))
-#                     chunk = data.get("response", "")
-#                     if chunk:
-#                         has_content = True
-#                         yield chunk
-#             if not has_content:
-#                 yield "⚠️ Ollama connected, but returned an empty response (Try increasing token limit or simplifying query)."
-#         else:
-#             yield f"⚠️ Ollama Error: Status code {response.status_code}"
-            
-#     except Exception as e:
-#         yield f"⚠️ Error details: {str(e)}"
-
-
 import os
 from groq import Groq
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Tera actual Groq account ke available chat models
 GROQ_MODELS = [
-    "qwen/qwen3.8-27b",       # Best quality - smart model
-    "openai/gpt-oss-20b",     # Fast + good
-    "openai/gpt-oss-120b",    # Largest - best answers
-    "allam-2-7b",             # Lightweight fallback
+    "qwen/qwen3.8-27b",
+    "openai/gpt-oss-20b",
+    "openai/gpt-oss-120b",
+    "allam-2-7b",
 ]
 
 
 def build_rag_chain(vector_store):
     """Returns retriever package."""
-    return {"retriever": vector_store.as_retriever(search_kwargs={"k": 3})}
+    return {"retriever": vector_store.as_retriever(search_kwargs={"k": 6})}
 
 
 def ask_question_stream(rag_package, query: str):
     """Streams response using Groq API - fast & free!"""
     try:
-        # 1. Get relevant context
         retriever = rag_package["retriever"]
         docs = retriever.invoke(query)
         context = "\n\n".join([doc.page_content for doc in docs]) if docs else "No context found."
 
-        # 2. Build prompt
-        prompt = f"""Answer the question in friendly Hinglish based on the context below.
-Keep it brief, clear and helpful.
+        prompt = f"""You are AskIt, a helpful assistant that answers questions in detail using only the context below.
+
+Language rule (very important):
+- Look at the language style of the QUESTION below.
+- If the question is written in Hinglish (Hindi words in Roman/English script, mixed with English), answer in the SAME natural Hinglish style — like a friend explaining something.
+- If the question is written in plain English, answer in plain, natural English.
+- If the question is written in pure Hindi (Devanagari script), answer in pure Hindi.
+- Match the question's language style exactly, every time.
+
+Answer rules:
+- Give a thorough, well-explained answer — don't just give a one-line reply. Explain the reasoning, cover every relevant point found in the context, and use examples from the context where helpful.
+- Structure longer answers with short paragraphs or a numbered/bulleted list when there are multiple points.
+- Use only the information in the context below. If part of the answer isn't in the context, say clearly which part is missing, but still explain fully whatever the context DOES support — don't cut the answer short just because some detail is missing.
+- Never respond with just one or two sentences unless the question genuinely only needs that.
 
 Context:
 {context}
@@ -88,7 +46,6 @@ Question: {query}
 
 Answer:"""
 
-        # 3. Groq streaming
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
             yield "⚠️ GROQ_API_KEY missing in .env file!"
@@ -102,8 +59,8 @@ Answer:"""
                 stream = client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
-                    max_tokens=1024,
+                    temperature=0.4,
+                    max_tokens=2048,
                     stream=True,
                 )
 
@@ -131,3 +88,4 @@ Answer:"""
 
     except Exception as e:
         yield f"⚠️ Error: {str(e)}"
+
