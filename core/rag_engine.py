@@ -17,32 +17,57 @@ def build_rag_chain(vector_store):
     return {"retriever": vector_store.as_retriever(search_kwargs={"k": 6})}
 
 
-def ask_question_stream(rag_package, query: str):
+def get_relevant_docs(rag_package, query: str):
+    """Fetch relevant chunks for a query — used to show sources separately."""
+    retriever = rag_package["retriever"]
+    return retriever.invoke(query)
+
+
+def format_history(chat_history: list, max_turns: int = 3) -> str:
+    """
+    Turns the last few (user, bot) exchanges into a short text block
+    so the model can understand follow-up questions like "isse aur explain karo".
+    """
+    if not chat_history:
+        return "No previous conversation."
+
+    recent = chat_history[-(max_turns * 2):]  # last N user+bot pairs
+    lines = []
+    for msg in recent:
+        speaker = "User" if msg["role"] == "user" else "AskIt"
+        lines.append(f"{speaker}: {msg['content']}")
+    return "\n".join(lines)
+
+
+def ask_question_stream(rag_package, query: str, chat_history: list = None):
     """Streams response using Groq API - fast & free!"""
     try:
-        retriever = rag_package["retriever"]
-        docs = retriever.invoke(query)
+        docs = get_relevant_docs(rag_package, query)
         context = "\n\n".join([doc.page_content for doc in docs]) if docs else "No context found."
+        history_text = format_history(chat_history or [])
 
-        prompt = f"""You are AskIt, a helpful assistant that answers questions in detail using only the context below.
+        prompt = f"""You are AskIt, a helpful assistant that answers questions in detail using only the document context below.
+
+Conversation so far (for understanding follow-up questions like "explain more" or "isse aur batao"):
+{history_text}
 
 Language rule (very important):
-- Look at the language style of the QUESTION below.
-- If the question is written in Hinglish (Hindi words in Roman/English script, mixed with English), answer in the SAME natural Hinglish style — like a friend explaining something.
-- If the question is written in plain English, answer in plain, natural English.
-- If the question is written in pure Hindi (Devanagari script), answer in pure Hindi.
-- Match the question's language style exactly, every time.
+- Look at the language style of the CURRENT question below.
+- If it's Hinglish (Hindi words in Roman/English script mixed with English), answer in the SAME natural Hinglish style.
+- If it's plain English, answer in plain English.
+- If it's pure Hindi (Devanagari), answer in pure Hindi.
+- Match the question's language style exactly, every time — ignore the language of earlier turns.
 
 Answer rules:
-- Give a thorough, well-explained answer — don't just give a one-line reply. Explain the reasoning, cover every relevant point found in the context, and use examples from the context where helpful.
+- If the current question refers back to the conversation (e.g. "iske baare mein aur batao", "what about the second point"), use the conversation history above to understand what "it" or "that" refers to.
+- Give a thorough, well-explained answer using the document context — don't give a one-line reply unless the question genuinely only needs that.
 - Structure longer answers with short paragraphs or a numbered/bulleted list when there are multiple points.
-- Use only the information in the context below. If part of the answer isn't in the context, say clearly which part is missing, but still explain fully whatever the context DOES support — don't cut the answer short just because some detail is missing.
-- Never respond with just one or two sentences unless the question genuinely only needs that.
+- Use only the information in the context below. If part of the answer isn't in the context, say clearly which part is missing, but still explain fully whatever IS supported.
 
-Context:
+Document context:
 {context}
 
-Question: {query}
+Current question: {query}
 
 Answer:"""
 
@@ -88,4 +113,3 @@ Answer:"""
 
     except Exception as e:
         yield f"⚠️ Error: {str(e)}"
-

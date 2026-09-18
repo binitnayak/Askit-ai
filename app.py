@@ -3,7 +3,8 @@ import os
 from pypdf import PdfReader
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
-from core.rag_engine import build_rag_chain, ask_question_stream
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from core.rag_engine import build_rag_chain, ask_question_stream, get_relevant_docs
 from youtube_transcript_api import YouTubeTranscriptApi
 from urllib.parse import urlparse, parse_qs
 import datetime
@@ -33,6 +34,16 @@ def extract_video_id(url):
 
 def now_time():
     return datetime.datetime.now().strftime("%I:%M %p")
+
+
+def make_chunks(text: str):
+    """Sentence/paragraph-aware chunking instead of blind character slicing."""
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=120,
+        separators=["\n\n", "\n", ". ", " ", ""]
+    )
+    return splitter.split_text(text)
 
 
 # ── State ─────────────────────────────────────────────────────────────────────
@@ -69,8 +80,7 @@ with st.expander("📂 Load Source — PDF, TXT or YouTube", expanded=not st.ses
                     text = uploaded.read().decode("utf-8")
 
                 if text.strip():
-                    chunk_size, overlap = 300, 30
-                    chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - overlap)]
+                    chunks = make_chunks(text)
                     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
                     st.session_state.vector_store = FAISS.from_texts(chunks, embeddings)
                     st.session_state.active_source = uploaded.name
@@ -104,8 +114,7 @@ with st.expander("📂 Load Source — PDF, TXT or YouTube", expanded=not st.ses
                                 text = " ".join([i['text'] for i in tlist])
 
                             if text:
-                                chunk_size, overlap = 300, 30
-                                chunks = [text[i:i+chunk_size] for i in range(0, len(text), chunk_size - overlap)]
+                                chunks = make_chunks(text)
                                 embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
                                 st.session_state.vector_store = FAISS.from_texts(chunks, embeddings)
                                 st.session_state.active_source = f"YT: {video_id}"
@@ -144,6 +153,17 @@ if query := st.chat_input("Message AskIt..."):
             st.session_state.messages.append({"role": "assistant", "content": reply, "time": now_time()})
         else:
             rag_package = build_rag_chain(st.session_state.vector_store)
-            response_gen = ask_question_stream(rag_package, query)
+
+            # Pass conversation history (excluding the message just added) for follow-up context
+            history = st.session_state.messages[:-1]
+            response_gen = ask_question_stream(rag_package, query, chat_history=history)
             full_response = st.write_stream(response_gen)
+
+            # Show which chunks the answer came from
+            with st.expander("📚 Sources used"):
+                source_docs = get_relevant_docs(rag_package, query)
+                for i, doc in enumerate(source_docs, 1):
+                    snippet = doc.page_content[:200].strip()
+                    st.markdown(f"**Chunk {i}:** {snippet}...")
+
             st.session_state.messages.append({"role": "assistant", "content": full_response, "time": now_time()})
