@@ -1,17 +1,8 @@
-fastapi
-uvicorn[standard]
-python-dotenv
-pydantic
-python-multipart
-requests
-
-langchain
-langchain-core
-langchain-community
-langchain-huggingface
 langchain-mistralai
 mistralai
 
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
 sentence-transformers
 huggingface-hub
 faiss-cpu
