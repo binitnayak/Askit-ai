@@ -1,4 +1,3 @@
-
 import io
 import os
 import sqlite3
@@ -141,9 +140,23 @@ class ConversationRequest(BaseModel):
 # EMBEDDINGS + SPLITTER
 # =========================================================
 
-embeddings = HuggingFaceEmbeddings(
-    model_name="all-MiniLM-L6-v2"
-)
+# IMPORTANT:
+# Embedding model ko startup par load nahi karenge.
+# Ye sirf tab load hoga jab document/YouTube indexing
+# actually start hogi.
+
+embeddings = None
+
+
+def get_embeddings():
+    global embeddings
+
+    if embeddings is None:
+        embeddings = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2"
+        )
+
+    return embeddings
 
 
 splitter = RecursiveCharacterTextSplitter(
@@ -170,7 +183,7 @@ def create_vector_store(text: str):
 
     vector_store = FAISS.from_texts(
         chunks,
-        embeddings
+        get_embeddings()
     )
 
     return len(chunks)
