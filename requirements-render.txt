@@ -11,7 +11,7 @@ langchain-community
 langchain-huggingface
 langchain-mistralai
 mistralai
-
+groq
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
 sentence-transformers
