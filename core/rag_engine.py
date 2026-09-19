@@ -4,6 +4,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+# ==================================================
+# GROQ MODELS
+# ==================================================
+
 GROQ_MODELS = [
     "qwen/qwen3.8-27b",
     "openai/gpt-oss-20b",
@@ -12,104 +17,414 @@ GROQ_MODELS = [
 ]
 
 
+# ==================================================
+# BUILD RAG CHAIN
+# ==================================================
+
 def build_rag_chain(vector_store):
     """Returns retriever package."""
-    return {"retriever": vector_store.as_retriever(search_kwargs={"k": 6})}
 
+    return {
+        "retriever": vector_store.as_retriever(
+            search_kwargs={"k": 6}
+        )
+    }
+
+
+# ==================================================
+# GET RELEVANT DOCUMENTS
+# ==================================================
 
 def get_relevant_docs(rag_package, query: str):
-    """Fetch relevant chunks for a query — used to show sources separately."""
+    """Fetch relevant chunks for a query."""
+
     retriever = rag_package["retriever"]
+
     return retriever.invoke(query)
 
 
-def format_history(chat_history: list, max_turns: int = 3) -> str:
-    """
-    Turns the last few (user, bot) exchanges into a short text block
-    so the model can understand follow-up questions like "isse aur explain karo".
-    """
+# ==================================================
+# FORMAT CHAT HISTORY
+# ==================================================
+
+def format_history(
+    chat_history: list,
+    max_turns: int = 3
+) -> str:
+
     if not chat_history:
         return "No previous conversation."
 
-    recent = chat_history[-(max_turns * 2):]  # last N user+bot pairs
+    # Last few messages
+    recent = chat_history[-(max_turns * 2):]
+
     lines = []
+
     for msg in recent:
-        speaker = "User" if msg["role"] == "user" else "AskIt"
-        lines.append(f"{speaker}: {msg['content']}")
+
+        # ------------------------------------------
+        # Dictionary format
+        # ------------------------------------------
+
+        if isinstance(msg, dict):
+
+            if msg.get("role") == "user":
+                speaker = "User"
+            else:
+                speaker = "AskIt"
+
+            content = msg.get(
+                "content",
+                ""
+            )
+
+            lines.append(
+                f"{speaker}: {content}"
+            )
+
+        # ------------------------------------------
+        # Tuple format support
+        # ------------------------------------------
+
+        elif isinstance(msg, tuple):
+
+            if len(msg) >= 2:
+
+                lines.append(
+                    f"User: {msg[0]}"
+                )
+
+                lines.append(
+                    f"AskIt: {msg[1]}"
+                )
+
     return "\n".join(lines)
 
 
-def ask_question_stream(rag_package, query: str, chat_history: list = None):
-    """Streams response using Groq API - fast & free!"""
+# ==================================================
+# ASK QUESTION
+# ==================================================
+
+def ask_question_stream(
+    rag_package,
+    query: str,
+    chat_history: list = None
+):
+
     try:
-        docs = get_relevant_docs(rag_package, query)
-        context = "\n\n".join([doc.page_content for doc in docs]) if docs else "No context found."
-        history_text = format_history(chat_history or [])
 
-        prompt = f"""You are AskIt, a helpful assistant that answers questions in detail using only the document context below.
+        # ------------------------------------------
+        # Get relevant documents
+        # ------------------------------------------
 
-Conversation so far (for understanding follow-up questions like "explain more" or "isse aur batao"):
+        docs = get_relevant_docs(
+            rag_package,
+            query
+        )
+
+        # ------------------------------------------
+        # Create context
+        # ------------------------------------------
+
+        if docs:
+
+            context = "\n\n".join(
+                [
+                    doc.page_content
+                    for doc in docs
+                ]
+            )
+
+        else:
+
+            context = "No context found."
+
+
+        # ------------------------------------------
+        # Format previous conversation
+        # ------------------------------------------
+
+        history_text = format_history(
+            chat_history or []
+        )
+
+
+        # ==================================================
+        # PROMPT
+        # ==================================================
+
+        prompt = f"""
+You are AskIt, a helpful AI assistant.
+
+Your job is to answer the user's question using
+the document/video context provided below.
+
+==================================================
+CONVERSATION HISTORY
+==================================================
+
 {history_text}
 
-Language rule (very important):
-- Look at the language style of the CURRENT question below.
-- If it's Hinglish (Hindi words in Roman/English script mixed with English), answer in the SAME natural Hinglish style.
-- If it's plain English, answer in plain English.
-- If it's pure Hindi (Devanagari), answer in pure Hindi.
-- Match the question's language style exactly, every time — ignore the language of earlier turns.
 
-Answer rules:
-- If the current question refers back to the conversation (e.g. "iske baare mein aur batao", "what about the second point"), use the conversation history above to understand what "it" or "that" refers to.
-- Give a thorough, well-explained answer using the document context — don't give a one-line reply unless the question genuinely only needs that.
-- Structure longer answers with short paragraphs or a numbered/bulleted list when there are multiple points.
-- Use only the information in the context below. If part of the answer isn't in the context, say clearly which part is missing, but still explain fully whatever IS supported.
+==================================================
+LANGUAGE RULE
+==================================================
 
-Document context:
+IMPORTANT:
+
+Always answer in the same language style as the
+CURRENT USER QUESTION.
+
+Examples:
+
+User:
+"ye video kis bare mein hai?"
+
+Answer:
+Natural Hinglish.
+
+User:
+"accha ji, isko thoda aur explain karo"
+
+Answer:
+Natural Hinglish.
+
+User:
+"What is this video about?"
+
+Answer:
+English.
+
+User:
+"इस वीडियो के बारे में बताओ"
+
+Answer:
+Hindi in Devanagari.
+
+Do NOT automatically switch to English.
+
+Do NOT use overly formal Hindi.
+
+For Hinglish, use natural everyday Roman Hindi
+mixed with English.
+
+==================================================
+CONVERSATION RULE
+==================================================
+
+Use previous conversation history when the user asks
+follow-up questions.
+
+For example:
+
+User:
+"video kis bare mein hai?"
+
+AskIt:
+"Ye video water ke baare mein hai."
+
+User:
+"accha ji"
+
+Respond naturally.
+
+User:
+"iske baare mein aur batao"
+
+Understand that "iske" refers to the previous topic.
+
+==================================================
+ANSWER RULES
+==================================================
+
+1. Use the document context as the main source.
+
+2. Do not invent facts that are not supported by
+   the document.
+
+3. If the answer is not available in the document,
+   clearly say that the information is not available.
+
+4. Give a useful explanation instead of only one
+   short sentence when more explanation is possible.
+
+5. For multiple points, use bullets or numbered lists.
+
+6. Keep the answer natural and easy to understand.
+
+7. Match the CURRENT question's language style.
+
+==================================================
+DOCUMENT / VIDEO CONTEXT
+==================================================
+
 {context}
 
-Current question: {query}
 
-Answer:"""
+==================================================
+CURRENT QUESTION
+==================================================
 
-        api_key = os.getenv("GROQ_API_KEY")
+{query}
+
+
+==================================================
+ANSWER
+==================================================
+"""
+
+
+        # ==================================================
+        # GROQ API KEY
+        # ==================================================
+
+        api_key = os.getenv(
+            "GROQ_API_KEY"
+        )
+
         if not api_key:
-            yield "⚠️ GROQ_API_KEY missing in .env file!"
+
+            yield (
+                "⚠️ GROQ_API_KEY missing "
+                "in .env file!"
+            )
+
             return
 
-        client = Groq(api_key=api_key)
+
+        # ==================================================
+        # GROQ CLIENT
+        # ==================================================
+
+        client = Groq(
+            api_key=api_key
+        )
+
+
+        # ==================================================
+        # TRY MODELS
+        # ==================================================
 
         for model in GROQ_MODELS:
+
             try:
-                print(f"🔄 Trying: {model}", flush=True)
+
+                print(
+                    f"🔄 Trying: {model}",
+                    flush=True
+                )
+
+
                 stream = client.chat.completions.create(
+
                     model=model,
-                    messages=[{"role": "user", "content": prompt}],
+
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+
                     temperature=0.4,
+
                     max_tokens=2048,
+
                     stream=True,
                 )
 
+
+                # ------------------------------------------
+                # Stream answer
+                # ------------------------------------------
+
                 for chunk in stream:
-                    delta = chunk.choices[0].delta.content
+
+                    delta = (
+                        chunk
+                        .choices[0]
+                        .delta
+                        .content
+                    )
+
                     if delta:
+
                         yield delta
 
-                print(f"✅ {model} worked!", flush=True)
+
+                print(
+                    f"✅ {model} worked!",
+                    flush=True
+                )
+
                 return
 
+
             except Exception as e:
+
                 err = str(e)
-                if "404" in err or "model_not_found" in err:
-                    print(f"⏭️ {model} not available, trying next...", flush=True)
+
+                # ------------------------------------------
+                # Model unavailable
+                # ------------------------------------------
+
+                if (
+                    "404" in err
+                    or "model_not_found" in err
+                ):
+
+                    print(
+                        f"⏭️ {model} not available, "
+                        "trying next...",
+                        flush=True
+                    )
+
                     continue
-                elif "429" in err or "rate_limit" in err:
-                    print(f"⏭️ {model} rate limited, trying next...", flush=True)
+
+
+                # ------------------------------------------
+                # Rate limit
+                # ------------------------------------------
+
+                elif (
+                    "429" in err
+                    or "rate_limit" in err
+                ):
+
+                    print(
+                        f"⏭️ {model} rate limited, "
+                        "trying next...",
+                        flush=True
+                    )
+
                     continue
+
+
+                # ------------------------------------------
+                # Other error
+                # ------------------------------------------
+
                 else:
-                    yield f"⚠️ Error: {err}"
+
+                    yield (
+                        f"⚠️ Error: {err}"
+                    )
+
                     return
 
-        yield "⚠️ No models available. Check API key or try again."
+
+        # ==================================================
+        # NO MODEL
+        # ==================================================
+
+        yield (
+            "⚠️ No models available. "
+            "Check API key or try again."
+        )
+
 
     except Exception as e:
-        yield f"⚠️ Error: {str(e)}"
+
+        yield (
+            f"⚠️ Error: {str(e)}"
+        )

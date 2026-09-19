@@ -167,3 +167,4 @@ if query := st.chat_input("Message AskIt..."):
                     st.markdown(f"**Chunk {i}:** {snippet}...")
 
             st.session_state.messages.append({"role": "assistant", "content": full_response, "time": now_time()})
+
