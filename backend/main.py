@@ -1,4 +1,11 @@
-from fastapi import FastAPI, UploadFile, File
+
+import io
+import os
+import sqlite3
+from datetime import datetime
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -22,27 +29,20 @@ from core.rag_engine import (
     ask_question_stream,
 )
 
-import os
-from dotenv import load_dotenv
 
-
-# ==================================================
-# LOAD ENV
-# ==================================================
+# =========================================================
+# ENV
+# =========================================================
 
 load_dotenv()
 
 
-# ==================================================
-# APP
-# ==================================================
+# =========================================================
+# FASTAPI
+# =========================================================
 
 app = FastAPI(title="AskIt API")
 
-
-# ==================================================
-# CORS
-# ==================================================
 
 app.add_middleware(
     CORSMiddleware,
@@ -56,61 +56,350 @@ app.add_middleware(
 )
 
 
-# ==================================================
+# =========================================================
+# DATABASE
+# =========================================================
+
+DB_NAME = "askit.db"
+
+
+def get_db():
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            source_type TEXT,
+            source_name TEXT,
+            source_id TEXT,
+            source_text TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+
+            FOREIGN KEY (conversation_id)
+            REFERENCES conversations(id)
+            ON DELETE CASCADE
+        )
+        """
+    )
+
+    conn.commit()
+    conn.close()
+
+
+init_db()
+
+
+# =========================================================
 # GLOBAL VECTOR STORE
-# ==================================================
+# =========================================================
 
 vector_store = None
+active_conversation_id = None
 
 
-# ==================================================
-# CHAT HISTORY
-# ==================================================
-
-chat_history = []
-
-
-# ==================================================
-# REQUEST MODELS
-# ==================================================
+# =========================================================
+# MODELS
+# =========================================================
 
 class YouTubeRequest(BaseModel):
     video_id: str
+    conversation_id: int | None = None
 
 
 class ChatRequest(BaseModel):
     question: str
+    conversation_id: int
 
 
-# ==================================================
-# EMBEDDINGS
-# ==================================================
+class ConversationRequest(BaseModel):
+    title: str = "New Chat"
+
+
+# =========================================================
+# EMBEDDINGS + SPLITTER
+# =========================================================
 
 embeddings = HuggingFaceEmbeddings(
     model_name="all-MiniLM-L6-v2"
 )
 
 
-# ==================================================
-# TEXT CHUNKER
-# ==================================================
-
 splitter = RecursiveCharacterTextSplitter(
     chunk_size=800,
     chunk_overlap=120,
-    separators=[
-        "\n\n",
-        "\n",
-        ". ",
-        " ",
-        "",
-    ],
+    separators=["\n\n", "\n", ". ", " ", ""],
 )
 
 
-# ==================================================
-# HOME
-# ==================================================
+# =========================================================
+# VECTOR STORE
+# =========================================================
+
+def create_vector_store(text: str):
+    global vector_store
+
+    if not text or not text.strip():
+        raise Exception("Document text is empty.")
+
+    chunks = splitter.split_text(text)
+
+    if not chunks:
+        raise Exception("Could not create text chunks.")
+
+    vector_store = FAISS.from_texts(
+        chunks,
+        embeddings
+    )
+
+    return len(chunks)
+
+
+# =========================================================
+# CONVERSATION HELPERS
+# =========================================================
+
+def create_conversation(
+    title="New Chat",
+    source_type=None,
+    source_name=None,
+    source_id=None,
+    source_text=None,
+):
+    now = datetime.now().isoformat()
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO conversations
+        (
+            title,
+            source_type,
+            source_name,
+            source_id,
+            source_text,
+            created_at,
+            updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            title,
+            source_type,
+            source_name,
+            source_id,
+            source_text,
+            now,
+            now,
+        ),
+    )
+
+    conversation_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return conversation_id
+
+
+def update_conversation_source(
+    conversation_id,
+    source_type,
+    source_name,
+    source_id,
+    source_text,
+):
+    now = datetime.now().isoformat()
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        UPDATE conversations
+        SET
+            source_type = ?,
+            source_name = ?,
+            source_id = ?,
+            source_text = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            source_type,
+            source_name,
+            source_id,
+            source_text,
+            now,
+            conversation_id,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def update_title(conversation_id, title):
+    now = datetime.now().isoformat()
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        UPDATE conversations
+        SET title = ?, updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            title,
+            now,
+            conversation_id,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+@app.put("/conversations/{conversation_id}/rename")
+def rename_conversation(conversation_id: int, data: dict):
+    title = data.get("title", "").strip()
+
+    if not title:
+        return {
+            "success": False,
+            "error": "Title cannot be empty."
+        }
+
+    update_title(conversation_id, title)
+
+    return {
+        "success": True,
+        "conversation_id": conversation_id,
+        "title": title
+    }
+
+
+def save_message(
+    conversation_id,
+    role,
+    content,
+):
+    now = datetime.now().isoformat()
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        INSERT INTO messages
+        (
+            conversation_id,
+            role,
+            content,
+            created_at
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            conversation_id,
+            role,
+            content,
+            now,
+        ),
+    )
+
+    cursor.execute(
+        """
+        UPDATE conversations
+        SET updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            now,
+            conversation_id,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def get_messages(conversation_id):
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            id,
+            role,
+            content,
+            created_at
+        FROM messages
+        WHERE conversation_id = ?
+        ORDER BY id ASC
+        """,
+        (conversation_id,),
+    )
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return [dict(row) for row in rows]
+
+
+def get_conversation(conversation_id):
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT *
+        FROM conversations
+        WHERE id = ?
+        """,
+        (conversation_id,),
+    )
+
+    row = cursor.fetchone()
+
+    conn.close()
+
+    if row:
+        return dict(row)
+
+    return None
+
+
+# =========================================================
+# HOME / HEALTH
+# =========================================================
 
 @app.get("/")
 def home():
@@ -119,10 +408,6 @@ def home():
     }
 
 
-# ==================================================
-# HEALTH
-# ==================================================
-
 @app.get("/health")
 def health():
     return {
@@ -130,202 +415,251 @@ def health():
     }
 
 
-# ==================================================
-# HELPER
-# ==================================================
+# =========================================================
+# CREATE NEW CONVERSATION
+# =========================================================
 
-def create_vector_store(text: str):
-    """
-    Convert text into chunks
-    and create FAISS vector store.
-    """
+@app.post("/conversations")
+def new_conversation(request: ConversationRequest):
+    conversation_id = create_conversation(
+        title=request.title or "New Chat"
+    )
 
+    return {
+        "success": True,
+        "conversation_id": conversation_id,
+        "title": request.title or "New Chat",
+    }
+
+
+# =========================================================
+# GET ALL CONVERSATIONS
+# =========================================================
+
+@app.get("/conversations")
+def get_all_conversations():
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT
+            id,
+            title,
+            source_type,
+            source_name,
+            created_at,
+            updated_at
+        FROM conversations
+        ORDER BY updated_at DESC
+        """
+    )
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    return {
+        "success": True,
+        "conversations": [
+            dict(row)
+            for row in rows
+        ],
+    }
+
+
+# =========================================================
+# GET ONE CONVERSATION
+# =========================================================
+
+@app.get("/conversations/{conversation_id}")
+def get_one_conversation(conversation_id: int):
     global vector_store
+    global active_conversation_id
 
-    if not text or not text.strip():
-        raise Exception(
-            "Document text is empty."
+    conversation = get_conversation(
+        conversation_id
+    )
+
+    if not conversation:
+        return {
+            "success": False,
+            "error": "Conversation not found."
+        }
+
+    # Restore source into vector store
+    if conversation["source_text"]:
+        create_vector_store(
+            conversation["source_text"]
         )
 
-    # --------------------------------------------------
-    # Create chunks
-    # --------------------------------------------------
+    active_conversation_id = conversation_id
 
-    chunks = splitter.split_text(text)
-
-    if not chunks:
-        raise Exception(
-            "Could not create text chunks."
-        )
-
-    print(
-        f"📚 Creating {len(chunks)} chunks...",
-        flush=True,
+    messages = get_messages(
+        conversation_id
     )
 
-    # --------------------------------------------------
-    # Create FAISS
-    # --------------------------------------------------
+    return {
+        "success": True,
+        "conversation": conversation,
+        "messages": messages,
+    }
 
-    vector_store = FAISS.from_texts(
-        chunks,
-        embeddings,
+
+# =========================================================
+# DELETE CONVERSATION
+# =========================================================
+
+@app.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: int):
+    global vector_store
+    global active_conversation_id
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        DELETE FROM messages
+        WHERE conversation_id = ?
+        """,
+        (conversation_id,),
     )
 
-    print(
-        "✅ FAISS vector store created.",
-        flush=True,
+    cursor.execute(
+        """
+        DELETE FROM conversations
+        WHERE id = ?
+        """,
+        (conversation_id,),
     )
 
-    return len(chunks)
+    conn.commit()
+    conn.close()
+
+    if active_conversation_id == conversation_id:
+        vector_store = None
+        active_conversation_id = None
+
+    return {
+        "success": True,
+        "message": "Conversation deleted."
+    }
 
 
-# ==================================================
-# YOUTUBE TRANSCRIPT
-# ==================================================
+# =========================================================
+# YOUTUBE
+# =========================================================
 
 @app.post("/youtube")
 def get_youtube_transcript(
     request: YouTubeRequest
 ):
-
-    global vector_store
-    global chat_history
+    global active_conversation_id
 
     try:
 
-        # --------------------------------------------------
-        # Reset old conversation
-        # --------------------------------------------------
-
-        chat_history = []
-
-        # --------------------------------------------------
-        # Validate video ID
-        # --------------------------------------------------
-
-        video_id = request.video_id.strip()
-
-        if not video_id:
-
+        if not request.video_id.strip():
             return {
                 "success": False,
-                "error": "YouTube video ID is empty.",
+                "error": "YouTube video ID is empty."
             }
 
-        print(
-            f"🎬 Loading YouTube video: {video_id}",
-            flush=True,
-        )
+        conversation_id = request.conversation_id
 
-        # ==================================================
-        # PROXY CONFIGURATION
-        # ==================================================
-
-        proxy_username = os.getenv(
-            "YOUTUBE_PROXY_USERNAME"
-        )
-
-        proxy_password = os.getenv(
-            "YOUTUBE_PROXY_PASSWORD"
-        )
-
-        # --------------------------------------------------
-        # If proxy credentials exist
-        # --------------------------------------------------
-
-        if proxy_username and proxy_password:
-
-            from youtube_transcript_api.proxies import (
-                WebshareProxyConfig
+        # If frontend didn't provide conversation
+        # create one automatically
+        if conversation_id is None:
+            conversation_id = create_conversation(
+                title="YouTube Chat"
             )
 
-            proxy_config = WebshareProxyConfig(
-                proxy_username=proxy_username,
-                proxy_password=proxy_password,
-            )
-
-            api = YouTubeTranscriptApi(
-                proxy_config=proxy_config
-            )
-
-            print(
-                "🌐 YouTube proxy enabled.",
-                flush=True,
-            )
-
-        # --------------------------------------------------
-        # Without proxy
-        # --------------------------------------------------
-
-        else:
-
-            api = YouTubeTranscriptApi()
-
-            print(
-                "🌐 YouTube proxy not configured.",
-                flush=True,
-            )
-
-        # ==================================================
-        # GET TRANSCRIPT LIST
-        # ==================================================
-
-        transcript_list = api.list(
-            video_id
-        )
-
-        # ==================================================
-        # TRY HINDI / ENGLISH
-        # ==================================================
+        api = YouTubeTranscriptApi()
 
         try:
 
-            transcript = transcript_list.find_transcript(
-                ["hi", "en"]
+            transcript_list = api.list(
+                request.video_id
             )
 
-            fetched = transcript.fetch()
+            try:
+
+                transcript = transcript_list.find_transcript(
+                    ["hi", "en"]
+                )
+
+                fetched = transcript.fetch()
+
+            except Exception:
+
+                fetched = None
+
+                for transcript in transcript_list:
+
+                    try:
+
+                        fetched = transcript.fetch()
+
+                        if fetched:
+                            break
+
+                    except Exception:
+                        continue
+
+                if not fetched:
+                    raise Exception(
+                        "No usable transcript found."
+                    )
+
+        except IpBlocked:
+
+            return {
+                "success": False,
+                "error": (
+                    "YouTube is blocking requests from your IP. "
+                    "The transcript library is installed correctly."
+                )
+            }
+
+        except RequestBlocked:
+
+            return {
+                "success": False,
+                "error": (
+                    "YouTube blocked the transcript request."
+                )
+            }
+
+        except TranscriptsDisabled:
+
+            return {
+                "success": False,
+                "error": (
+                    "This video has transcripts disabled."
+                )
+            }
 
         except NoTranscriptFound:
 
-            # --------------------------------------------------
-            # Try any available transcript
-            # --------------------------------------------------
-
-            fetched = None
-
-            for transcript in transcript_list:
-
-                try:
-
-                    fetched = transcript.fetch()
-
-                    if fetched:
-                        break
-
-                except Exception:
-                    continue
-
-            if not fetched:
-
-                raise NoTranscriptFound(
-                    video_id,
-                    ["hi", "en"],
-                    transcript_list,
+            return {
+                "success": False,
+                "error": (
+                    "No transcript was found for this video."
                 )
+            }
 
-        # ==================================================
-        # CONVERT TRANSCRIPT TO TEXT
-        # ==================================================
+        except VideoUnavailable:
+
+            return {
+                "success": False,
+                "error": (
+                    "This YouTube video is unavailable."
+                )
+            }
 
         transcript_parts = []
 
         for item in fetched:
-
-            # --------------------------------------------------
-            # New API object format
-            # --------------------------------------------------
 
             if hasattr(item, "text"):
 
@@ -333,76 +667,54 @@ def get_youtube_transcript(
                     item.text
                 )
 
-            # --------------------------------------------------
-            # Dictionary format
-            # --------------------------------------------------
-
             elif isinstance(item, dict):
 
-                text_value = item.get(
-                    "text"
-                )
+                text_value = item.get("text")
 
                 if text_value:
-
                     transcript_parts.append(
                         str(text_value)
                     )
 
-            # --------------------------------------------------
-            # Tuple / list format
-            # --------------------------------------------------
-
-            elif isinstance(
-                item,
-                (tuple, list)
-            ):
+            elif isinstance(item, (tuple, list)):
 
                 if len(item) > 0:
-
                     transcript_parts.append(
                         str(item[0])
                     )
-
-        # --------------------------------------------------
-        # Combine transcript
-        # --------------------------------------------------
 
         text = " ".join(
             transcript_parts
         )
 
         if not text.strip():
-
             raise Exception(
                 "Transcript is empty."
             )
-
-        print(
-            f"✅ Transcript loaded: {len(text)} characters",
-            flush=True,
-        )
-
-        # ==================================================
-        # CREATE VECTOR STORE
-        # ==================================================
 
         chunks_count = create_vector_store(
             text
         )
 
-        print(
-            "✅ YouTube transcript indexed successfully.",
-            flush=True,
+        update_conversation_source(
+            conversation_id=conversation_id,
+            source_type="youtube",
+            source_name=f"YouTube: {request.video_id}",
+            source_id=request.video_id,
+            source_text=text,
         )
 
-        # ==================================================
-        # SUCCESS
-        # ==================================================
+        update_title(
+            conversation_id,
+            f"YouTube: {request.video_id}"
+        )
+
+        active_conversation_id = conversation_id
 
         return {
             "success": True,
-            "video_id": video_id,
+            "conversation_id": conversation_id,
+            "video_id": request.video_id,
             "source_type": "youtube",
             "chunks": chunks_count,
             "message": (
@@ -411,161 +723,41 @@ def get_youtube_transcript(
             ),
         }
 
-    # ==================================================
-    # YOUTUBE IP BLOCK
-    # ==================================================
-
-    except IpBlocked:
-
-        print(
-            "❌ YouTube IP is blocked.",
-            flush=True,
-        )
-
-        return {
-            "success": False,
-            "error": (
-                "YouTube is blocking transcript "
-                "requests from this IP."
-            ),
-            "error_type": "ip_blocked",
-        }
-
-    # ==================================================
-    # REQUEST BLOCK
-    # ==================================================
-
-    except RequestBlocked:
-
-        print(
-            "❌ YouTube request was blocked.",
-            flush=True,
-        )
-
-        return {
-            "success": False,
-            "error": (
-                "YouTube blocked the transcript "
-                "request. Please try again later "
-                "or configure a supported proxy."
-            ),
-            "error_type": "request_blocked",
-        }
-
-    # ==================================================
-    # TRANSCRIPTS DISABLED
-    # ==================================================
-
-    except TranscriptsDisabled:
-
-        print(
-            "❌ Transcripts are disabled.",
-            flush=True,
-        )
-
-        return {
-            "success": False,
-            "error": (
-                "This YouTube video has "
-                "transcripts disabled."
-            ),
-            "error_type": "transcripts_disabled",
-        }
-
-    # ==================================================
-    # NO TRANSCRIPT
-    # ==================================================
-
-    except NoTranscriptFound:
-
-        print(
-            "❌ No transcript found.",
-            flush=True,
-        )
-
-        return {
-            "success": False,
-            "error": (
-                "No transcript was found "
-                "for this YouTube video."
-            ),
-            "error_type": "no_transcript",
-        }
-
-    # ==================================================
-    # VIDEO UNAVAILABLE
-    # ==================================================
-
-    except VideoUnavailable:
-
-        print(
-            "❌ YouTube video unavailable.",
-            flush=True,
-        )
-
-        return {
-            "success": False,
-            "error": (
-                "This YouTube video is unavailable."
-            ),
-            "error_type": "video_unavailable",
-        }
-
-    # ==================================================
-    # OTHER YOUTUBE ERROR
-    # ==================================================
-
     except Exception as e:
 
         print(
-            "❌ YouTube Error:",
-            str(e),
-            flush=True,
+            "YouTube Error:",
+            str(e)
         )
 
         return {
             "success": False,
-            "error": str(e),
-            "error_type": "unknown",
+            "error": str(e)
         }
 
 
-# ==================================================
-# PDF / TXT DOCUMENT
-# ==================================================
+# =========================================================
+# PDF / TXT
+# =========================================================
 
 @app.post("/document")
 async def upload_document(
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    conversation_id: int | None = Form(None),
 ):
 
-    global vector_store
-    global chat_history
+    global active_conversation_id
 
     try:
-
-        # --------------------------------------------------
-        # Reset old conversation
-        # --------------------------------------------------
-
-        chat_history = []
-
-        # --------------------------------------------------
-        # Validate filename
-        # --------------------------------------------------
 
         if not file.filename:
 
             return {
                 "success": False,
-                "error": "No file selected.",
+                "error": "No file selected."
             }
 
         filename = file.filename.lower()
-
-        # --------------------------------------------------
-        # Only PDF / TXT
-        # --------------------------------------------------
 
         if not (
             filename.endswith(".pdf")
@@ -575,14 +767,9 @@ async def upload_document(
             return {
                 "success": False,
                 "error": (
-                    "Only PDF and TXT files "
-                    "are supported."
+                    "Only PDF and TXT files are supported."
                 ),
             }
-
-        # --------------------------------------------------
-        # Read file
-        # --------------------------------------------------
 
         file_bytes = await file.read()
 
@@ -590,13 +777,17 @@ async def upload_document(
 
             return {
                 "success": False,
-                "error": "Uploaded file is empty.",
+                "error": "Uploaded file is empty."
             }
 
-        # ==================================================
-        # TXT
-        # ==================================================
+        # Create conversation if needed
+        if conversation_id is None:
 
+            conversation_id = create_conversation(
+                title=file.filename
+            )
+
+        # TXT
         if filename.endswith(".txt"):
 
             try:
@@ -611,15 +802,10 @@ async def upload_document(
                     "latin-1"
                 )
 
-        # ==================================================
         # PDF
-        # ==================================================
-
         else:
 
             try:
-
-                import io
 
                 pdf_file = io.BytesIO(
                     file_bytes
@@ -636,7 +822,6 @@ async def upload_document(
                     page_text = page.extract_text()
 
                     if page_text:
-
                         pages.append(
                             page_text
                         )
@@ -651,10 +836,6 @@ async def upload_document(
                     f"Could not read PDF: {str(e)}"
                 )
 
-        # --------------------------------------------------
-        # Validate extracted text
-        # --------------------------------------------------
-
         if not text.strip():
 
             return {
@@ -665,22 +846,9 @@ async def upload_document(
                 ),
             }
 
-        print(
-            f"📄 Processing document: {file.filename}",
-            flush=True,
-        )
-
-        # --------------------------------------------------
-        # Create vector store
-        # --------------------------------------------------
-
         chunks_count = create_vector_store(
             text
         )
-
-        # --------------------------------------------------
-        # Source type
-        # --------------------------------------------------
 
         source_type = (
             "pdf"
@@ -688,65 +856,94 @@ async def upload_document(
             else "txt"
         )
 
-        print(
-            "✅ Document indexed successfully.",
-            flush=True,
+        update_conversation_source(
+            conversation_id=conversation_id,
+            source_type=source_type,
+            source_name=file.filename,
+            source_id=None,
+            source_text=text,
         )
+
+        update_title(
+            conversation_id,
+            file.filename
+        )
+
+        active_conversation_id = conversation_id
 
         return {
             "success": True,
+            "conversation_id": conversation_id,
             "filename": file.filename,
             "source_type": source_type,
             "chunks": chunks_count,
             "message": (
-                "Document loaded and "
-                "indexed successfully."
+                "Document loaded and indexed successfully."
             ),
         }
 
     except Exception as e:
 
         print(
-            "❌ Document Error:",
-            str(e),
-            flush=True,
+            "Document Error:",
+            str(e)
         )
 
         return {
             "success": False,
-            "error": str(e),
+            "error": str(e)
         }
 
 
-# ==================================================
+# =========================================================
 # CHAT
-# ==================================================
+# =========================================================
 
 @app.post("/chat")
 def chat(request: ChatRequest):
 
     global vector_store
-    global chat_history
+    global active_conversation_id
 
     try:
 
-        # --------------------------------------------------
-        # Check source
-        # --------------------------------------------------
+        conversation = get_conversation(
+            request.conversation_id
+        )
 
-        if vector_store is None:
+        if not conversation:
 
             return {
                 "success": False,
-                "error": (
-                    "Pehle koi YouTube video "
-                    "ya document load karo."
-                ),
+                "error": "Conversation not found."
             }
 
-        # --------------------------------------------------
-        # Check question
-        # --------------------------------------------------
+        # Restore vector store if needed
+        if (
+            vector_store is None
+            or active_conversation_id
+            != request.conversation_id
+        ):
+
+            if conversation["source_text"]:
+
+                create_vector_store(
+                    conversation["source_text"]
+                )
+
+                active_conversation_id = (
+                    request.conversation_id
+                )
+
+            else:
+
+                return {
+                    "success": False,
+                    "error": (
+                        "Pehle koi YouTube video "
+                        "ya document load karo."
+                    ),
+                }
 
         question = request.question.strip()
 
@@ -754,25 +951,25 @@ def chat(request: ChatRequest):
 
             return {
                 "success": False,
-                "error": "Question empty hai.",
+                "error": "Question empty hai."
             }
 
-        print(
-            f"💬 Question: {question}",
-            flush=True,
+        # Get old messages from SQLite
+        old_messages = get_messages(
+            request.conversation_id
         )
 
-        # --------------------------------------------------
-        # Build RAG
-        # --------------------------------------------------
+        chat_history = [
+            {
+                "role": message["role"],
+                "content": message["content"],
+            }
+            for message in old_messages
+        ]
 
         rag_package = build_rag_chain(
             vector_store
         )
-
-        # --------------------------------------------------
-        # Ask question
-        # --------------------------------------------------
 
         response_generator = ask_question_stream(
             rag_package,
@@ -780,67 +977,53 @@ def chat(request: ChatRequest):
             chat_history=chat_history,
         )
 
-        # --------------------------------------------------
-        # Generator → complete answer
-        # --------------------------------------------------
-
         answer = "".join(
             response_generator
         )
 
-        # --------------------------------------------------
         # Save user message
-        # --------------------------------------------------
-
-        chat_history.append(
-            {
-                "role": "user",
-                "content": question,
-            }
+        save_message(
+            request.conversation_id,
+            "user",
+            question,
         )
 
-        # --------------------------------------------------
-        # Save assistant message
-        # --------------------------------------------------
-
-        chat_history.append(
-            {
-                "role": "assistant",
-                "content": answer,
-            }
+        # Save AI message
+        save_message(
+            request.conversation_id,
+            "assistant",
+            answer,
         )
 
-        # --------------------------------------------------
-        # Keep last 20 messages
-        # --------------------------------------------------
+        # Automatically create title
+        if len(old_messages) == 0:
 
-        if len(chat_history) > 20:
+            title = question[:45]
 
-            chat_history = chat_history[-20:]
+            if len(question) > 45:
+                title += "..."
 
-        print(
-            "✅ Answer generated.",
-            flush=True,
-        )
-
-        # --------------------------------------------------
-        # Return answer
-        # --------------------------------------------------
+            update_title(
+                request.conversation_id,
+                title,
+            )
 
         return {
             "success": True,
             "answer": answer,
+            "conversation_id": (
+                request.conversation_id
+            ),
         }
 
     except Exception as e:
 
         print(
-            "❌ Chat Error:",
-            str(e),
-            flush=True,
+            "Chat Error:",
+            str(e)
         )
 
         return {
             "success": False,
-            "error": str(e),
+            "error": str(e)
         }
