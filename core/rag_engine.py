@@ -240,13 +240,13 @@ ANSWER RULES
 1. Use the document context as the main source.
 
 2. Do not invent facts that are not supported by
-   the document.
+the document.
 
 3. If the answer is not available in the document,
-   clearly say that the information is not available.
+clearly say that the information is not available.
 
 4. Give a useful explanation instead of only one
-   short sentence when more explanation is possible.
+short sentence when more explanation is possible.
 
 5. For multiple points, use bullets or numbered lists.
 
@@ -284,9 +284,14 @@ ANSWER
 
         if not api_key:
 
+            print(
+                "❌ GROQ_API_KEY is missing!",
+                flush=True
+            )
+
             yield (
                 "⚠️ GROQ_API_KEY missing "
-                "in .env file!"
+                "in Railway environment variables."
             )
 
             return
@@ -340,6 +345,9 @@ ANSWER
 
                 for chunk in stream:
 
+                    if not chunk.choices:
+                        continue
+
                     delta = (
                         chunk
                         .choices[0]
@@ -365,7 +373,7 @@ ANSWER
                 err = str(e)
 
                 # ------------------------------------------
-                # Model unavailable
+                # MODEL UNAVAILABLE
                 # ------------------------------------------
 
                 if (
@@ -383,7 +391,7 @@ ANSWER
 
 
                 # ------------------------------------------
-                # Rate limit
+                # RATE LIMIT
                 # ------------------------------------------
 
                 elif (
@@ -401,29 +409,46 @@ ANSWER
 
 
                 # ------------------------------------------
-                # Other error
+                # OTHER ERROR
                 # ------------------------------------------
 
                 else:
 
+                    print(
+                        f"❌ {model} ERROR: "
+                        f"{type(e).__name__}: {e}",
+                        flush=True
+                    )
+
                     yield (
-                        f"⚠️ Error: {err}"
+                        "⚠️ Groq connection error. "
+                        "Check Railway logs for the exact error."
                     )
 
                     return
 
 
         # ==================================================
-        # NO MODEL
+        # NO MODEL AVAILABLE
         # ==================================================
+
+        print(
+            "❌ No Groq model was available.",
+            flush=True
+        )
 
         yield (
             "⚠️ No models available. "
-            "Check API key or try again."
+            "Check the Groq model configuration."
         )
 
 
     except Exception as e:
+
+        print(
+            f"❌ RAG ERROR: {type(e).__name__}: {e}",
+            flush=True
+        )
 
         yield (
             f"⚠️ Error: {str(e)}"
