@@ -55,7 +55,6 @@ def format_history(
     if not chat_history:
         return "No previous conversation."
 
-    # Last few messages
     recent = chat_history[-(max_turns * 2):]
 
     lines = []
@@ -83,7 +82,7 @@ def format_history(
             )
 
         # ------------------------------------------
-        # Tuple format support
+        # Tuple format
         # ------------------------------------------
 
         elif isinstance(msg, tuple):
@@ -320,7 +319,11 @@ ANSWER
                 )
 
 
-                stream = client.chat.completions.create(
+                # ==================================================
+                # NON-STREAMING GROQ REQUEST
+                # ==================================================
+
+                response = client.chat.completions.create(
 
                     model=model,
 
@@ -335,35 +338,38 @@ ANSWER
 
                     max_tokens=2048,
 
-                    stream=True,
+                    stream=False,
                 )
 
 
-                # ------------------------------------------
-                # Stream answer
-                # ------------------------------------------
+                # ==================================================
+                # GET ANSWER
+                # ==================================================
 
-                for chunk in stream:
+                if not response.choices:
 
-                    if not chunk.choices:
-                        continue
-
-                    delta = (
-                        chunk
-                        .choices[0]
-                        .delta
-                        .content
+                    print(
+                        f"❌ {model} returned no choices",
+                        flush=True
                     )
 
-                    if delta:
+                    continue
 
-                        yield delta
 
+                answer = response.choices[0].message.content
+
+
+                # ==================================================
+                # SUCCESS
+                # ==================================================
 
                 print(
                     f"✅ {model} worked!",
                     flush=True
                 )
+
+
+                yield answer
 
                 return
 
