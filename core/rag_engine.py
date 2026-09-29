@@ -10,12 +10,8 @@ load_dotenv()
 # ==================================================
 
 GROQ_MODELS = [
-    "qwen/qwen3.8-27b",
     "openai/gpt-oss-20b",
-    "openai/gpt-oss-120b",
-    "allam-2-7b",
 ]
-
 
 # ==================================================
 # BUILD RAG CHAIN
@@ -26,7 +22,7 @@ def build_rag_chain(vector_store):
 
     return {
         "retriever": vector_store.as_retriever(
-            search_kwargs={"k": 6}
+            search_kwargs={"k": 4}
         )
     }
 
@@ -336,7 +332,7 @@ ANSWER
 
                     temperature=0.4,
 
-                    max_tokens=2048,
+                    max_tokens=1024,
 
                     stream=False,
                 )
